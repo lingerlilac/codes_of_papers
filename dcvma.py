@@ -41,28 +41,28 @@ for m in range(0, 2):
         qw[m][n] = Queue.Queue(maxsize=count)
 maxvalue = [0.0 for col in range(4)]
 max_last = [0.0 for col in range(4)]
-r_keep = [[0.0 for col in range(2)] for row in range(4)]
-r = [[0.0 for col in range(2)] for row in range(4)]
+r_keep = [[0.0 for col in range(2)] for row in range(2)]
+r = [[0.0 for col in range(2)] for row in range(2)]
 channel_lambda = [0.5, 0.6]
 arrival_lambda = [0.2, 1.0]
-channel = [[0 for col in range(2)] for row in range(4)]
-schedule = [0 for col in range(4)]
+channel = [[0 for col in range(2)] for row in range(2)]
+schedule = [0 for col in range(2)]
 drop_decision = [[0 for col in range(2)] for row in range(2)]
 delay_record = [[[0.0 for col in range(loops)]
-                 for col in range(2)] for row in range(4)]
-delay_every_step = [[0 for col in range(2)] for row in range(4)]
-tran_count = [[0 for col in range(2)] for row in range(4)]
+                 for col in range(2)] for row in range(2)]
+delay_every_step = [[0 for col in range(2)] for row in range(2)]
+tran_count = [[0 for col in range(2)] for row in range(2)]
 drop_count = [[0 for col in range(2)] for row in range(2)]
-arrival = [[0 for col in range(2)] for row in range(4)]
+arrival = [[0 for col in range(2)] for row in range(2)]
 max_delay_record = [[[0.0 for col in range(loops)]
-                     for col in range(2)] for row in range(4)]
-max_delay = [[0 for col in range(2)] for row in range(4)]
+                     for col in range(2)] for row in range(2)]
+max_delay = [[0 for col in range(2)] for row in range(2)]
 trans_record = [[[0.0 for col in range(loops)]
-                 for col in range(2)] for row in range(4)]
+                 for col in range(2)] for row in range(2)]
 
 
 def Channel():
-    for m in range(0, 4):
+    for m in range(0, 2):
         for n in range(0, 2):
             tmp = np.random.binomial(1, channel_lambda[n], 1)
             channel[m][n] = tmp[0]
@@ -302,7 +302,6 @@ for j in range(0, loops):
                 max_delay_record[m][n][j] = 1.2 *  max_delay[m][n]
             else:
                 delay_record[m][n][j] = 0.0
-                max_delay_record[m][n][j] = 0.0
             trans_record[m][n][j] = float(tran_count[m][n]) / float(count)
 
     for m in range(0, 4):
