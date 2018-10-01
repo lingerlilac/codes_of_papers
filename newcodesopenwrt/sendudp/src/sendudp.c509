@@ -1,0 +1,1004 @@
+
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/ieee80211.h>
+#include <linux/nl80211.h>
+#include <linux/rtnetlink.h>
+#include <linux/slab.h>
+#include <net/net_namespace.h>
+#include <linux/rcupdate.h>
+#include <linux/if_ether.h>
+#include <net/cfg80211.h>
+#include <linux/time.h>
+#include <linux/timer.h>
+#include <net/sock.h>
+
+MODULE_LICENSE("Dual BSD/GPL");
+
+#define BUFF_SIZE 1000
+#define SEND_SIZE 1024
+#define B_S 	1024
+
+__u64 countt[10] = {0};
+
+// int count_iw = 0; 
+// int count_beacon = 0;
+
+int control_beacon = 0;
+int last_length = 0;
+static 	struct timer_list tm;
+struct 	timeval oldtv;
+char 	public_buffer[B_S];
+int 	write_begin = 0;
+__u16 WINSIZE = 1;
+__u16 DROPS = 2;
+__u16 IW = 3;
+__u16 QUEUE = 4;
+__u16 BEACON = 5;
+__u16 SURVEY = 6;
+__u16 KEEP_IW = 7;
+__u16 KEEP_BEACON = 8;
+
+struct dp_packet
+{
+    __u32 ip_src;
+    __u32 ip_dst;
+    __u16 port_src;
+    __u16 port_dst;
+    __u32 sequence;
+    __u32 ack_sequence;
+    __u32 drop_count;
+    __u16 dpl;
+    __u32 in_time;
+    struct dp_packet *next;
+};
+
+struct dp_packet_new
+{
+    __u32 ip_src;
+    __u32 ip_dst;
+    __u16 port_src;
+    __u16 port_dst;
+    __u32 sequence;
+    __u32 ack_sequence;
+    __u32 drop_count;
+    __u16 dpl;
+    __u16 pad;
+    __u32 in_time;
+};
+
+struct data_iw
+{
+    char station[6];
+    __u16 device;
+    __u32 inactive_time;
+    __u32 rx_bytes;
+    __u32 rx_packets;
+    __u32 tx_bytes;
+    __u32 tx_packets;
+    __u32 tx_retries;
+    __u32 tx_failed;
+    __s32 signal;
+    __s32 signal_avg;
+    __u32 expected_throughput;
+    struct data_iw *next;
+};
+
+struct data_iw_new
+{
+    char station[6];
+    __u16 device;
+    __u32 inactive_time;
+    __u32 rx_bytes;
+    __u32 rx_packets;
+    __u32 tx_bytes;
+    __u32 tx_packets;
+    __u32 tx_retries;
+    __u32 tx_failed;
+    __s32 signal;
+    __s32 signal_avg;
+    __u32 expected_throughput;
+};
+
+struct data_survey
+{
+	__u64 time;
+	__u64 time_busy;
+	__u64 time_ext_busy;
+	__u64 time_rx;
+	__u64 time_tx;
+	__u64 time_scan;
+	__u32 filled;
+	__s8 noise;
+	__u8 pad;
+    __u16 center_freq;
+};
+
+struct data_beacon
+{
+    __u16 data_rate;
+    __u16 freq;
+    __s8 signal;
+    __u8 bssid[6];
+    __u32 timein;
+    struct data_beacon *next;
+};
+
+struct data_beacon_new
+{
+    __u16 data_rate;
+    __u16 freq;
+    __s8 signal;
+    __u8 bssid[6];
+    __u16 pad;
+};
+struct data_queue 
+{
+  __u32 queue_id;
+  __u64 bytes;
+  __u32 packets;
+  __u32 qlen;
+  __u32 backlog;
+  __u32 drops;
+  __u32 requeues;
+  __u32 overlimits;
+  __u32 pad;
+};
+
+struct data_winsize {
+  __be32 ip_src;
+  __be32 ip_dst;
+  __be16 sourceaddr;
+  __be16 destination;
+  __be32 sequence;
+  __be32 ack_sequence;
+  __be16 flags;
+  __be16 windowsize;
+  __be64 systime;
+  __be32 datalength;
+  char wscale[3];
+  char eth_src[6];
+  char eth_dst[6];
+  char pad[5];
+};
+
+struct winsize_t
+{
+	__u16 category;
+	char mac[6];
+	struct 	data_winsize winsize;
+};
+struct dp_t
+{
+	__u16 category;
+	char mac[6];
+	struct 	dp_packet_new drops;
+};
+struct di_t
+{
+	__u16 category;
+	char mac[6];
+	struct 	data_iw_new iw;
+};
+struct dq_t
+{
+	__u16 category;
+	char mac[6];
+	struct 	data_queue queue;
+};
+struct db_t
+{
+	__u16 category;
+	char mac[6];
+	struct 	data_beacon_new beacon;
+};
+struct ds_t
+{
+	__u16 category;
+	char mac[6];
+	struct 	data_survey survey;
+};
+
+struct keep_iw
+{
+	__u16 category;
+	char station[6];
+	char mac[6];
+	__u16 pad;
+};
+
+struct keep_beacon
+{
+	__u16 category;
+	char bssid[6];
+	char mac[6];
+	__u16 pad;
+};
+
+extern struct data_winsize ubuff[];
+extern int uhead;
+extern int utail;
+extern __u64 packet_c_linger;
+
+struct 	data_iw 		*iwlist_last = NULL;
+struct 	dp_packet 		*dp_mac_last = NULL;
+struct 	dp_packet 		*dp_que_last = NULL;
+struct 	data_queue 		*queue_last  = NULL;
+struct 	data_beacon 	*beacon_last = NULL;
+
+
+extern struct 	data_iw *ieee80211_dump_station_linger(struct data_survey *); //
+extern struct 	dp_packet *dpt_mac_linger(void); //
+extern void 	destroy_iwlist(struct data_iw *iwlist);
+extern struct 	data_queue *dump_class_stats_linger(void); //
+extern struct 	dp_packet *dpt_queue_linger(void); //
+extern struct 	data_beacon *get_beacon_global_linger(void); //
+extern void destroy_after_transmitted_codel(void);
+extern void destroy_after_transmitted_mac80211(void);
+
+struct socket *sock_global;
+char mac_global[6];
+
+void old_iw_2_new(struct data_iw_new *new, struct data_iw *old);
+void old_beacon_2_new(struct data_beacon_new *new, struct data_beacon *old);
+void old_dp_2_new(struct dp_packet_new *new, struct dp_packet *old);
+void write_2_public_buffer(void *data, int length);
+void send_the_buffer(void);
+void get_information(void);
+void destroy_data(void);
+void compare_and_iwlist(struct data_iw *ptr, struct data_survey *sur);
+void del_this_node_iw(struct data_iw *ptr_pre, struct data_iw *ptr);
+void del_this_node_beacon(struct data_beacon *ptr_pre, struct data_beacon *ptr);
+void callback(void);
+void destroy_list_beacon(struct data_beacon *ptr);
+void destroy_list_iw(struct data_iw *ptr);
+void copy_last_iw(struct data_iw *curr);
+void copy_last_beacon(struct data_beacon *curr);
+void compare_and_queue(struct data_queue *ptr);
+void compare_and_beacon(struct data_beacon *ptr);
+struct socket * get_sock(void);
+void packet_t(void);
+void print_iwlist(struct data_iw *ptr, char *str);
+void print_mac(char *addr);
+void mac_tranADDR_toString_r(unsigned char* addr, char* str, size_t size);
+
+
+void mac_tranADDR_toString_r(unsigned char* addr, char* str, size_t size)
+{
+    if(addr == NULL || str == NULL || size < 18)
+      // exit(1);
+    	printk(KERN_DEBUG "fff\n");
+
+    snprintf(str, size, "%02x:%02x:%02x:%02x:%02x:%02x", 
+             addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
+    str[17] = '\0';
+}
+
+void print_mac(char *addr)
+{
+	// int len = 18;
+	char str[18];
+	mac_tranADDR_toString_r(addr, str, 18);
+	printk(KERN_DEBUG "%s\n", str);
+}
+
+void old_iw_2_new(struct data_iw_new *new, struct data_iw *old)
+{
+	// strcpy(new->station, old->station);
+	// print_mac(old->station);
+	memcpy(new->station, old->station, 6);
+	new->device 				= old->device;
+	new->inactive_time 			= old->inactive_time;
+	new->rx_bytes 				= old->rx_bytes;
+	new->rx_packets 			= old->rx_packets;
+	new->tx_bytes 				= old->tx_bytes;
+	new->tx_packets 			= old->tx_packets;
+	new->tx_retries 			= old->tx_retries;
+	new->tx_failed 				= old->tx_failed;
+	new->signal 				= old->signal;
+	new->signal_avg 			= old->signal_avg;
+	new->expected_throughput 	= old->expected_throughput;
+}
+
+void old_beacon_2_new(struct data_beacon_new *new, struct data_beacon *old)
+{
+	new->data_rate 	= old->data_rate;
+	new->freq 		= old->freq;
+	new->signal 	= old->signal;
+	strcpy(new->bssid, old->bssid);
+}
+
+void old_dp_2_new(struct dp_packet_new *new, struct dp_packet *old)
+{
+	new->ip_src 		= 	old->ip_src;
+	new->ip_dst 		= 	old->ip_dst;
+	new->port_src 		= 	old->port_src;
+	new->port_dst 		= 	old->port_dst;
+	new->sequence 		= 	old->sequence;
+	new->ack_sequence 	= 	old->ack_sequence;
+	new->drop_count 	= 	old->drop_count;
+	new->dpl 			= 	old->dpl;
+	new->in_time 		= 	old->in_time;
+}
+
+void write_2_public_buffer(void *data, int length)
+{
+	if((write_begin + length) <= B_S)
+	{
+		memcpy(public_buffer + write_begin, data, length);
+		write_begin = write_begin + length;
+	}
+	else
+	{
+		// memset(&public_buffer, 0, B_S);
+		// write_begin = 0;
+		// printk(KERN_DEBUG "daddd\n");
+		send_the_buffer();
+		memcpy(public_buffer + write_begin, data, length);
+		write_begin = write_begin + length;		
+	}
+}
+
+void send_the_buffer(void)
+{
+	struct kvec iov;
+    struct msghdr msg = {.msg_flags = MSG_DONTWAIT|MSG_NOSIGNAL};
+    int len = 0;
+
+    char buffer[SEND_SIZE];
+
+    memset(&buffer, 0, SEND_SIZE);
+    memcpy(buffer, public_buffer, write_begin);
+
+    iov.iov_base = (void *)buffer;
+    iov.iov_len = write_begin;
+    len = kernel_sendmsg(sock_global, &msg, &iov, 1, write_begin);
+    if (len != write_begin) 
+    {
+        if (len == -ECONNREFUSED) 
+        {
+            printk(KERN_ALERT "Receive Port Unreachable packet!\n");
+        }
+    }
+    memset(public_buffer, 0, B_S);
+    write_begin = 0;
+
+}
+struct socket * get_sock(void)
+{
+        struct socket *sock;
+        struct sockaddr_in s_addr;
+        __s16 dstport = 6666;
+        __u32 dstip = 0xca76e470;
+        int ret= 0;
+
+        memset(&s_addr, 0, sizeof(s_addr));
+        s_addr.sin_family= AF_INET;
+        s_addr.sin_port= cpu_to_be16(dstport);
+     
+        s_addr.sin_addr.s_addr=cpu_to_be32(dstip); /*server ip is 192.168.209.134*/
+        sock=(struct socket *)kmalloc(sizeof(struct socket),GFP_KERNEL);
+
+        /*create a socket*/
+        // ret=sock_create_kern(&init_net, AF_INET, SOCK_STREAM,0,&sock);
+        ret=sock_create_kern(&init_net, AF_INET, SOCK_DGRAM, IPPROTO_UDP, &sock);
+
+        if(ret<0){
+                printk("client:socket create error!\n");
+                return NULL;
+        }
+        printk("client: socket create ok!\n");
+
+        /*connect server*/
+        ret=sock->ops->connect(sock,(struct sockaddr *)&s_addr, sizeof(s_addr),0);
+        if(ret!=0){
+                printk("client:connect error!\n");
+                return NULL;
+        }
+        printk("client:connect ok!\n");
+        return sock;
+}
+
+
+
+
+void callback(void)
+{
+    struct timeval tv;
+
+    do_gettimeofday(&tv);
+    packet_t();
+    oldtv = tv;
+    tm.expires = jiffies+1;
+    // if(((count_iw % 100) == 0) && count_iw > 0)
+    // 	printk(KERN_DEBUG "count_iw is %d\n", count_iw);
+    // if(((count_beacon % 100) == 0) && count_beacon > 0)
+    // 	printk(KERN_DEBUG "count_beacon is %d\n", count_beacon);
+    add_timer(&tm);        //重新开始计时
+}
+
+void del_this_node_iw(struct data_iw *ptr_pre, struct data_iw *ptr)
+{
+	struct data_iw *tmp = NULL;
+	if(ptr_pre == NULL)
+	{
+		tmp = ptr->next;
+		ptr = ptr->next;
+		kfree(tmp);
+
+		// count_iw -= 1;
+
+		tmp = NULL;
+	}
+	else
+	{
+		tmp = ptr->next;
+		ptr->next = tmp;
+		tmp = NULL;
+		kfree(ptr);
+
+		// count_iw -= 1;
+
+		ptr = NULL;
+	}
+}
+
+void del_this_node_beacon(struct data_beacon *ptr_pre, struct data_beacon *ptr)
+{
+	struct data_beacon *tmp = NULL;
+	if(ptr_pre == NULL)
+	{
+		tmp = ptr->next;
+		ptr = ptr->next;
+		kfree(tmp);
+
+		// count_beacon -= 1;
+
+		tmp = NULL;
+	}
+	else
+	{
+		tmp = ptr->next;
+		ptr->next = tmp;
+		tmp = NULL;
+		kfree(ptr);
+
+		// count_beacon -= 1;
+
+		ptr = NULL;
+	}
+}
+
+void destroy_list_iw(struct data_iw *ptr)
+{
+	struct data_iw *tmp = NULL;
+	tmp = ptr;
+	while(tmp)
+	{
+		void *pre = NULL;
+		pre = tmp;
+		tmp = tmp->next;
+		kfree(pre);
+
+		// count_iw -= 1;
+
+		pre = NULL;
+	}
+}
+
+void destroy_list_beacon(struct data_beacon *ptr)
+{
+	struct data_beacon *tmp = NULL;
+	tmp = ptr;
+	while(tmp)
+	{
+		void *pre = NULL;
+		pre = tmp;
+		tmp = tmp->next;
+		kfree(pre);
+
+		// count_beacon -= 1;
+
+		pre = NULL;
+	}
+}
+
+
+void copy_last_iw(struct data_iw *curr)
+{
+	struct data_iw *keep = NULL;
+	struct data_iw *ptr = NULL, *last_keep = NULL;
+	ptr = curr;	
+	while(ptr)
+	{
+		if(!keep)
+		{
+			keep = (struct data_iw*)kmalloc(sizeof(struct data_iw), GFP_KERNEL);
+			memset(keep, 0, sizeof(struct data_iw));
+
+			// count_iw += 1;
+
+			memcpy(keep->station, ptr->station, 6);
+			keep->device 				= ptr->device;
+			keep->inactive_time 		= ptr->inactive_time;
+			keep->rx_bytes 				= ptr->rx_bytes;
+			keep->rx_packets 			= ptr->rx_packets;
+			keep->tx_bytes 				= ptr->tx_bytes;
+			keep->tx_packets 			= ptr->tx_packets;
+			keep->tx_retries 			= ptr->tx_retries;
+			keep->tx_failed 			= ptr->tx_failed;
+			keep->signal 				= ptr->signal;
+			keep->signal_avg 			= ptr->signal_avg;
+			keep->expected_throughput 	= ptr->expected_throughput;
+			keep->next = NULL;
+			last_keep = keep;
+		}
+		else
+		{
+			struct data_iw *new = NULL;
+			new = (struct data_iw*)kmalloc(sizeof(struct data_iw), GFP_KERNEL);
+			memset(new, 0, sizeof(struct data_iw));
+
+			// count_iw += 1;
+
+			memcpy(new->station, ptr->station, 6);
+			new->device 				= ptr->device;
+			new->inactive_time 			= ptr->inactive_time;
+			new->rx_bytes 				= ptr->rx_bytes;
+			new->rx_packets 			= ptr->rx_packets;
+			new->tx_bytes 				= ptr->tx_bytes;
+			new->tx_packets 			= ptr->tx_packets;
+			new->tx_retries 			= ptr->tx_retries;
+			new->tx_failed 				= ptr->tx_failed;
+			new->signal 				= ptr->signal;
+			new->signal_avg 			= ptr->signal_avg;
+			new->expected_throughput 	= ptr->expected_throughput;
+			new->next = NULL;
+			last_keep->next = new;
+			last_keep = new;
+		}
+		ptr = ptr->next;
+	}
+	// print_iwlist(keep, "keep");
+	// print_iwlist(curr, "curr");
+	iwlist_last = keep;
+}
+
+void copy_last_beacon(struct data_beacon *curr)
+{
+	struct data_beacon *keep = NULL;
+	struct data_beacon *ptr = NULL, *last_keep = NULL;
+	ptr = curr;	
+	while(ptr)
+	{
+		if(!keep)
+		{
+			keep = (struct data_beacon*)kmalloc(sizeof(struct data_beacon), GFP_KERNEL);
+			memset(keep, 0, sizeof(struct data_beacon));
+			
+			// count_beacon += 1;
+
+			keep->data_rate = ptr->data_rate;
+			keep->freq 		= ptr->freq;
+			keep->signal 	= ptr->signal;
+			strcpy(keep->bssid, ptr->bssid);
+
+			keep->next = NULL;
+			last_keep = keep;
+		}
+		else
+		{
+			struct data_beacon *new = NULL;
+			new = (struct data_beacon*)kmalloc(sizeof(struct data_beacon), GFP_KERNEL);
+			memset(new, 0, sizeof(struct data_beacon));
+
+			// count_beacon += 1;
+
+			new->data_rate 	= ptr->data_rate;
+			new->freq 		= ptr->freq;
+			new->signal 	= ptr->signal;
+			strcpy(new->bssid, ptr->bssid);
+
+			new->next = NULL;
+			last_keep->next = new;
+			last_keep = new;
+		}
+		ptr = ptr->next;
+	}
+	beacon_last = keep;	
+}
+
+void compare_and_iwlist(struct data_iw *ptr, struct data_survey *sur)
+{
+	struct data_iw *tmp = NULL;
+	struct ds_t s_t;
+	memset(&s_t, 0, sizeof(struct ds_t));
+	tmp = ptr;
+	// printk(KERN_DEBUG "h11111\n");
+	s_t.category = SURVEY;
+	s_t.survey =  *sur;
+	memcpy(&(s_t.mac), mac_global, 6);
+	write_2_public_buffer(&s_t, sizeof(struct ds_t));
+	countt[SURVEY] += 1;	
+	while(tmp)
+	{
+		int condition = 0;
+		struct data_iw *iner = NULL, *pre = NULL;
+		iner = iwlist_last;
+		pre = iner;
+		while(iner)
+		{
+			condition = 0;
+			// printk(KERN_DEBUG "here\n");
+			if(strcmp(tmp->station, iner->station) == 0)
+			{
+				int tmp_t = packet_c_linger;
+				condition = (tmp->rx_bytes 			== iner->rx_bytes) + 
+							(tmp->rx_packets 		== iner->rx_packets) + 
+							(tmp->tx_bytes 			== iner->tx_bytes) + 
+							(tmp->tx_packets 		== iner->tx_packets) + 
+							(tmp->tx_retries 		== iner->tx_retries) +
+							(tmp->tx_failed 		== iner->tx_failed) + 
+							(tmp->signal 			== iner->signal) +
+							((tmp_t % 10)  	> 3);
+			}
+			// printk(KERN_DEBUG "xx %s, yy %s, zz %d\n", tmp->station, iner->station, condition);
+			if(condition == 8)
+			{
+				struct keep_iw t;
+				memset(&t, 0, sizeof(struct keep_iw));
+				t.category = KEEP_IW;
+				countt[KEEP_IW] += 1;
+				memcpy(&(t.mac), mac_global, 6);
+				memcpy(&(t.station), tmp->station, 6);
+				// printk(KERN_DEBUG "1");
+				// print_mac(tmp->station);
+				write_2_public_buffer(&t, sizeof(struct keep_iw));
+				break;
+			}
+			iner = iner->next;
+		}
+		if(condition != 8)
+		{
+			struct di_t t;
+			memset(&t, 0, sizeof(struct di_t));
+			t.category = IW;
+			memcpy(&(t.mac), mac_global, 6);
+			countt[IW] += 1;
+			old_iw_2_new(&(t.iw), tmp);
+			// printk(KERN_DEBUG "2");
+			// print_mac(t.iw.station);
+
+			write_2_public_buffer(&t, sizeof(struct di_t));
+			// printk(KERN_DEBUG "here111\n");
+		}
+		tmp = tmp->next;
+	}
+	destroy_list_iw(iwlist_last);
+	copy_last_iw(ptr);
+	// print_iwlist(ptr);
+	// printk(KERN_DEBUG "hhahha\n");
+	// print_iwlist(iwlist_last);
+}
+
+void compare_and_queue(struct data_queue *ptr)
+{
+	int condition = 0;
+	condition = (queue_last->queue_id 	== ptr->queue_id) + 
+				(queue_last->qlen 		== ptr->qlen) +
+				(queue_last->backlog 	== ptr->backlog) + 
+				(queue_last->drops 		== ptr->drops) +
+				(queue_last->requeues 	== ptr->requeues) + 
+				(queue_last->overlimits 	== ptr->overlimits);
+
+	if(condition != 6)
+	{
+		struct dq_t t;
+		memset(&t, 0, sizeof(struct dq_t));
+		t.category = QUEUE;
+		t.queue.queue_id 	= ptr->queue_id;
+		t.queue.bytes 		= ptr->bytes;
+		t.queue.packets 	= ptr->packets;
+		t.queue.qlen 		= ptr->qlen;
+		t.queue.backlog 	= ptr->backlog;
+		t.queue.drops 		= ptr->drops;
+		t.queue.requeues 	= ptr->requeues;
+		t.queue.overlimits 	= ptr->overlimits;
+		memcpy(&(t.mac), mac_global, 6);
+		write_2_public_buffer(&t, sizeof(struct dq_t));	
+		countt[QUEUE] += 1;
+		*queue_last = *ptr;	
+	}
+}
+
+void compare_and_beacon(struct data_beacon *ptr)
+{
+	struct data_beacon *tmp = NULL;
+	tmp = ptr;
+	while(tmp)
+	{
+		int condition = 0;
+		struct data_beacon *iner = NULL;
+		iner = beacon_last;
+		while(iner)
+		{
+			condition = 0;
+			if(strcmp(tmp->bssid, iner->bssid) == 0)
+			{
+			
+				condition = (tmp->data_rate 	== iner->data_rate) + 
+							(tmp->freq 			== iner->freq) 		+ 
+							(tmp->signal 		== iner->signal) 	+
+							((tmp->timein % 10) > 7);
+			}
+			if(condition == 4)
+			{
+				struct keep_beacon t;
+				memset(&t, 0, sizeof(struct keep_beacon));
+				t.category = KEEP_BEACON;
+				memcpy(&(t.mac), mac_global, 6);
+				countt[KEEP_BEACON] += 1;
+				memcpy(&(t.bssid), tmp->bssid, 6);
+				write_2_public_buffer(&t, sizeof(struct keep_beacon));
+				break;
+			}
+			iner = iner->next;		
+		}
+
+		if(condition != 4)
+		{
+			struct db_t t;
+			memset(&t, 0, sizeof(struct db_t));
+			t.category = BEACON;
+			memcpy(&(t.mac), mac_global, 6);
+			countt[BEACON] += 1;
+			old_beacon_2_new(&(t.beacon), tmp);
+			write_2_public_buffer(&t, sizeof(struct db_t));
+		}
+		tmp = tmp->next;
+	}
+	destroy_list_beacon(beacon_last);
+	copy_last_beacon(ptr);	
+}
+
+void get_information(void)
+{
+    // struct 	di_t 		di_w;
+    // struct 	dq_t 		dq_w;
+    // struct 	db_t 		db_w;
+    // struct 	winsize_t 	dw_w;
+    // struct 	dp_t 		dp_m_w, dp_q_w;
+	// struct 	ds_t 		ds_w;
+
+	struct 	data_iw 	*iwlist = NULL;
+	struct 	dp_packet 	*dp_mac = NULL;
+	struct 	dp_packet 	*dp_que = NULL;
+ 	struct 	data_queue 	*queue 	= NULL;
+    struct 	data_beacon *beacon = NULL;
+    struct data_survey survey_linger;
+
+	memset(queue_last, 0, sizeof(struct data_queue));
+	
+	control_beacon += 1;
+	control_beacon = control_beacon % 1000000;
+	memset(&survey_linger, 0, sizeof(struct data_survey));
+	iwlist 		= ieee80211_dump_station_linger(&survey_linger);
+	if((control_beacon % 1000) == 0)
+    	beacon 		= get_beacon_global_linger();
+	queue 		= dump_class_stats_linger();
+	dp_que 		= dpt_queue_linger();
+	dp_mac 		= dpt_mac_linger();
+
+	
+	if(iwlist)
+	{
+		// struct data_iw *ptr = NULL;
+		compare_and_iwlist(iwlist, &survey_linger);
+		destroy_iwlist(iwlist);
+		// ptr = iwlist;
+		// while(ptr)
+		// {
+		// 	old_iw_2_new(&(di_w.iw), iwlist);
+		// 	di_w.category = IW;
+		// 	write_2_public_buffer(&dw_w, sizeof(struct di_t));
+		// 	ptr = ptr->next;
+		// }
+	}
+
+	if(dp_mac)
+	{
+		struct dp_packet *ptr = NULL;
+		ptr = dp_mac;
+		while(ptr)
+		{
+			struct dp_t dp_m_w;
+			memset(&dp_m_w, 0, sizeof(struct dp_t));
+			old_dp_2_new(&(dp_m_w.drops), ptr);
+			dp_m_w.category = DROPS;
+			memcpy(&(dp_m_w.mac), mac_global, 6);
+			countt[DROPS] += 1;
+			write_2_public_buffer(&dp_m_w, sizeof(struct dp_t));
+			ptr = ptr->next;
+			// printk(KERN_DEBUG "MAC DROP\n");
+		}
+		destroy_after_transmitted_mac80211();
+	}
+
+    if(beacon)
+    {
+    	compare_and_beacon(beacon);
+    }
+
+	if(queue)
+	{
+		compare_and_queue(queue);
+	}
+
+	if(dp_que)
+	{
+		struct dp_packet *ptr = NULL;
+		ptr = dp_que;
+		while(ptr)
+		{
+			struct dp_t dp_q_w;
+			memset(&dp_q_w, 0, sizeof(struct dp_t));
+			old_dp_2_new(&(dp_q_w.drops), ptr);
+			dp_q_w.category = DROPS;
+			memcpy(&(dp_q_w.mac), mac_global, 6);
+			countt[9] += 1;
+			write_2_public_buffer(&dp_q_w, sizeof(struct dp_t));
+			ptr = ptr->next;
+			// printk(KERN_DEBUG "QUEUE DROP\n");
+		}
+		destroy_after_transmitted_codel();
+	}
+}
+
+void destroy_data(void)
+{
+	struct data_iw *pre_iw = NULL;
+	struct data_iw *ptr_iw = NULL;
+
+	struct dp_packet *pre_dpmac = NULL;
+	struct dp_packet *ptr_dpmac = NULL;
+
+	struct dp_packet *pre_dpque = NULL;
+	struct dp_packet *ptr_dpque = NULL;
+
+	struct data_queue *ptr_que = NULL;
+
+	struct data_beacon *pre_beacon = NULL;
+	struct data_beacon *ptr_beacon = NULL;
+
+	ptr_iw = iwlist_last;
+	while(ptr_iw)
+	{
+		pre_iw = ptr_iw;
+		ptr_iw = ptr_iw->next;
+		kfree(pre_iw);
+		pre_iw = NULL;
+	}
+
+	ptr_dpmac = dp_mac_last;
+	while(ptr_dpmac)
+	{
+		pre_dpmac = ptr_dpmac;
+		ptr_dpmac = ptr_dpmac->next;
+		kfree(pre_dpmac);
+		pre_dpmac = NULL;
+	}
+	ptr_dpque = dp_que_last;
+	while(ptr_dpque)
+	{
+		pre_dpque = ptr_dpque;
+		ptr_dpque = ptr_dpque->next;
+		kfree(pre_dpque);
+		pre_dpque = NULL;
+	}
+	ptr_que = queue_last;
+	if(ptr_que)
+	{
+		kfree(ptr_que);
+		ptr_que = NULL;
+	}
+	ptr_beacon = beacon_last;
+	while(ptr_beacon)
+	{
+		pre_beacon = ptr_beacon;
+		ptr_beacon = ptr_beacon->next;
+		kfree(pre_beacon);
+		pre_beacon = NULL;
+	}	
+}
+
+void packet_t(void)
+{
+    int ulen = 0;
+
+	ulen = (utail + BUFF_SIZE - uhead) % BUFF_SIZE;
+    while (ulen > 1) 
+    {
+
+        // if(dev)
+        // {
+        //     memcpy((ubuff + uhead)->mac_addr, dev->dev_addr, 6);
+        // }
+        struct winsize_t t;
+        memset(&t, 0, sizeof(struct winsize_t));
+        t.category = WINSIZE;
+       	memcpy(&(t.mac), mac_global, 6); 
+        memcpy(&(t.winsize), ubuff + uhead, sizeof(struct data_winsize));
+        write_2_public_buffer(&t, sizeof(struct winsize_t));
+        countt[WINSIZE] += 1;
+        uhead = (uhead + 1) % BUFF_SIZE;
+        ulen = ulen - 1;
+        get_information();
+
+    }
+}
+
+void print_iwlist(struct data_iw *t, char *str)
+{
+	struct data_iw *ptr = NULL;
+	ptr = t;
+	while(ptr)
+	{
+		printk(KERN_DEBUG "%s\t%u\n", str, ptr->rx_packets);
+		ptr = ptr->next;
+	}
+}
+
+static int hello_init(void)
+{
+    struct net_device *dev;
+    char *ifname = "br0";
+    
+	// iwlist_last 	= (struct data_iw *)kmalloc(sizeof(struct data_iw), GFP_KERNEL);
+	// dp_mac_last 	= (struct dp_packet *)kmalloc(sizeof(struct dp_packet), GFP_KERNEL);
+	// dp_que_last 	= (struct dp_packet *)kmalloc(sizeof(struct dp_packet), GFP_KERNEL);
+	queue_last 		= (struct data_queue *)kmalloc(sizeof(struct data_queue), GFP_KERNEL);
+	// beacon_last 	= (struct data_beacon *)kmalloc(sizeof(struct data_beacon), GFP_KERNEL);
+
+	printk(KERN_DEBUG "Hello, kernel");
+	sock_global = get_sock();
+
+    dev = __dev_get_by_name(sock_net(sock_global->sk), ifname);
+    if(dev)
+    {
+        memset(mac_global, 0, 6);
+        memcpy(mac_global, dev->dev_addr, 6);
+    }
+
+	write_begin = 0;
+	memset(&public_buffer, 0, B_S);
+
+    init_timer(&tm);    //初始化内核定时器
+
+    do_gettimeofday(&oldtv);        //获取当前时间
+    tm.function= (void *)&callback;            //指定定时时间到后的回调函数
+    // tm.data    = (unsigned long)"hello world";        //回调函数的参数
+    tm.expires = jiffies+ 1;        //定时时间
+    add_timer(&tm); 
+
+    return 0;
+}
+
+static void hello_exit(void)
+{
+	int i = 1;
+	for(i = 1; i <= 9; i++)
+	{
+		printk(KERN_DEBUG "%d is %llu %llu", i, countt[i], packet_c_linger);
+	}
+	if(sock_global)
+	{
+		sock_release(sock_global);
+		sock_global = NULL;
+	}
+	del_timer(&tm);
+	destroy_data();
+    printk(KERN_ALERT "Goodbye,Cruel world\n");
+}
+
+module_init(hello_init);
+module_exit(hello_exit); 
